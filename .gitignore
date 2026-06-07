@@ -1,0 +1,15 @@
+# Build artifacts
+/cache/
+/out/
+/broadcast/
+
+# Local deployment state
+.env
+.account
+/script/network/**/address.*.params
+
+# Project docs
+/docs/
+
+# OS noise
+.DS_Store

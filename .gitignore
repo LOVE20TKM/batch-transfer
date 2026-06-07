@@ -6,7 +6,6 @@
 # Local deployment state
 .env
 .account
-/script/network/**/address.*.params
 
 # Project docs
 /docs/

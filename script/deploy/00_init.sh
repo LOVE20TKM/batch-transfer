@@ -93,8 +93,8 @@ check_equal() {
     local expected="$2"
     local actual="$3"
 
-    expected=$(echo "$expected" | tr '[:upper:]' '[:lower:]')
-    actual=$(echo "$actual" | tr '[:upper:]' '[:lower:]')
+    expected=$(normalize_check_value "$expected")
+    actual=$(normalize_check_value "$actual")
 
     if [ "$expected" = "$actual" ]; then
         echo -e "\033[32m✓\033[0m $description"
@@ -109,6 +109,12 @@ check_equal() {
     fi
 }
 echo "check_equal() loaded"
+
+normalize_check_value() {
+    printf '%s' "$1" \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^([0-9]+)[[:space:]]+\[[^]]+\]$/\1/'
+}
 
 forge_script() {
     forge script "$@" \

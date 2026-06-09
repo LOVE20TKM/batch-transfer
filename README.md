@@ -27,8 +27,7 @@ The contract is intentionally simple:
 - ERC20 transfers precheck sender balance and allowance before executing transfer calls.
 - ERC20 transfers accept both standard boolean-return tokens and legacy no-return tokens.
 - Zero recipients and zero transfer amounts are rejected.
-- Transfer batches are capped at `MAX_TRANSFER_RECIPIENTS`.
-- Balance query batches are capped at `MAX_BALANCE_ACCOUNTS`.
+- Transfer and balance-query batch sizes are not capped by the contract; practical limits come from gas and caller constraints.
 
 Some token-specific rules cannot be predicted generically, including blacklist logic, paused tokens, fee-on-transfer behavior, and custom recipient restrictions.
 

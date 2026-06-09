@@ -3,7 +3,7 @@ pragma solidity =0.8.17;
 
 import {Test} from "forge-std/Test.sol";
 import {BatchTransfer} from "../src/BatchTransfer.sol";
-import {IBatchTransferErrors} from "../src/interface/IBatchTransfer.sol";
+import {IBatchTransferErrors, IBatchTransferEvents} from "../src/interface/IBatchTransfer.sol";
 
 contract MockERC20 {
     string public constant name = "Mock Token";
@@ -11,7 +11,7 @@ contract MockERC20 {
     uint8 public constant decimals = 18;
 
     bool public returnFalse;
-    bool public revertTransfer;
+    address public revertRecipient;
 
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
@@ -29,13 +29,13 @@ contract MockERC20 {
         returnFalse = returnFalse_;
     }
 
-    function setRevertTransfer(bool revertTransfer_) external {
-        revertTransfer = revertTransfer_;
+    function setRevertRecipient(address revertRecipient_) external {
+        revertRecipient = revertRecipient_;
     }
 
     function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        if (revertTransfer) {
-            revert("MOCK_REVERT");
+        if (to == revertRecipient) {
+            revert("MOCK_RECIPIENT");
         }
         if (returnFalse) {
             return false;
@@ -74,13 +74,87 @@ contract NoReturnERC20 {
     }
 }
 
+contract BrokenQueryERC20 {
+    enum QueryMode {
+        Ok,
+        Revert,
+        Short
+    }
+
+    QueryMode public balanceMode;
+    QueryMode public allowanceMode;
+
+    uint256 public balanceValue = 1_000;
+    uint256 public allowanceValue = 1_000;
+
+    function setBalanceMode(QueryMode balanceMode_) external {
+        balanceMode = balanceMode_;
+    }
+
+    function setAllowanceMode(QueryMode allowanceMode_) external {
+        allowanceMode = allowanceMode_;
+    }
+
+    fallback() external {
+        if (msg.sig == bytes4(keccak256("balanceOf(address)"))) {
+            _returnByMode(balanceMode, balanceValue);
+        }
+        if (msg.sig == bytes4(keccak256("allowance(address,address)"))) {
+            _returnByMode(allowanceMode, allowanceValue);
+        }
+
+        revert("UNKNOWN_SELECTOR");
+    }
+
+    function _returnByMode(QueryMode mode, uint256 value) internal pure {
+        if (mode == QueryMode.Revert) {
+            revert("BROKEN_QUERY");
+        }
+        if (mode == QueryMode.Short) {
+            assembly {
+                mstore(0x00, 1)
+                return(0x1f, 1)
+            }
+        }
+
+        assembly {
+            mstore(0x00, value)
+            return(0x00, 0x20)
+        }
+    }
+}
+
+contract ShortReturnERC20 {
+    mapping(address => uint256) public balanceOf;
+    mapping(address => mapping(address => uint256)) public allowance;
+
+    function mint(address account, uint256 amount) external {
+        balanceOf[account] += amount;
+    }
+
+    function approve(address spender, uint256 amount) external {
+        allowance[msg.sender][spender] = amount;
+    }
+
+    fallback() external {
+        if (msg.sig != bytes4(keccak256("transferFrom(address,address,uint256)"))) {
+            revert("UNKNOWN_SELECTOR");
+        }
+
+        assembly {
+            mstore(0x00, 1)
+            return(0x1f, 1)
+        }
+    }
+}
+
 contract RejectNative {
     receive() external payable {
         revert("REJECT_NATIVE");
     }
 }
 
-contract BatchTransferTest is Test {
+contract BatchTransferTest is Test, IBatchTransferEvents {
     BatchTransfer internal batchTransfer;
     MockERC20 internal token;
 
@@ -99,6 +173,8 @@ contract BatchTransferTest is Test {
         uint256[] memory amounts = _amounts3(1 ether, 2 ether, 3 ether);
 
         vm.deal(sender, 10 ether);
+        vm.expectEmit(true, false, false, true, address(batchTransfer));
+        emit NativeBatchTransfer(sender, 6 ether, 3);
         vm.prank(sender);
         uint256 totalAmount = batchTransfer.batchTransferNative{value: 6 ether}(recipients, amounts);
 
@@ -138,7 +214,11 @@ contract BatchTransferTest is Test {
         vm.prank(sender);
         vm.expectRevert(
             abi.encodeWithSelector(
-                IBatchTransferErrors.NativeTransferFailed.selector, 1, address(rejectNative), 1 ether
+                IBatchTransferErrors.NativeTransferFailed.selector,
+                1,
+                address(rejectNative),
+                1 ether,
+                _errorString("REJECT_NATIVE")
             )
         );
         batchTransfer.batchTransferNative{value: 2 ether}(recipients, amounts);
@@ -156,6 +236,8 @@ contract BatchTransferTest is Test {
         vm.prank(sender);
         token.approve(address(batchTransfer), 600);
 
+        vm.expectEmit(true, true, false, true, address(batchTransfer));
+        emit ERC20BatchTransfer(address(token), sender, 600, 3);
         vm.prank(sender);
         uint256 totalAmount = batchTransfer.batchTransferERC20(address(token), recipients, amounts);
 
@@ -248,7 +330,7 @@ contract BatchTransferTest is Test {
         vm.prank(sender);
         vm.expectRevert(
             abi.encodeWithSelector(
-                IBatchTransferErrors.ERC20TransferFailed.selector, address(token), 0, recipient1, 100
+                IBatchTransferErrors.ERC20InvalidReturn.selector, address(token), 0, recipient1, 100, abi.encode(false)
             )
         );
         batchTransfer.batchTransferERC20(address(token), recipients, amounts);
@@ -257,6 +339,96 @@ contract BatchTransferTest is Test {
         assertEq(token.balanceOf(recipient1), 0);
         assertEq(token.balanceOf(recipient2), 0);
         assertEq(token.balanceOf(recipient3), 0);
+    }
+
+    function testBatchTransferERC20RevertsOnTransferRevertAndRollsBack() public {
+        address[] memory recipients = _recipients3();
+        uint256[] memory amounts = _amounts3(100, 200, 300);
+
+        token.mint(sender, 1_000);
+        vm.prank(sender);
+        token.approve(address(batchTransfer), 600);
+        token.setRevertRecipient(recipient2);
+
+        vm.prank(sender);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IBatchTransferErrors.ERC20TransferFailed.selector,
+                address(token),
+                1,
+                recipient2,
+                200,
+                _errorString("MOCK_RECIPIENT")
+            )
+        );
+        batchTransfer.batchTransferERC20(address(token), recipients, amounts);
+
+        assertEq(token.balanceOf(sender), 1_000);
+        assertEq(token.balanceOf(recipient1), 0);
+        assertEq(token.balanceOf(recipient2), 0);
+        assertEq(token.balanceOf(recipient3), 0);
+        assertEq(token.allowance(sender, address(batchTransfer)), 600);
+    }
+
+    function testBatchTransferERC20RevertsOnShortTransferReturn() public {
+        ShortReturnERC20 shortReturnToken = new ShortReturnERC20();
+        address[] memory recipients = _recipients3();
+        uint256[] memory amounts = _amounts3(100, 200, 300);
+
+        shortReturnToken.mint(sender, 1_000);
+        vm.prank(sender);
+        shortReturnToken.approve(address(batchTransfer), 600);
+
+        vm.prank(sender);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IBatchTransferErrors.ERC20InvalidReturn.selector, address(shortReturnToken), 0, recipient1, 100, hex"01"
+            )
+        );
+        batchTransfer.batchTransferERC20(address(shortReturnToken), recipients, amounts);
+
+        assertEq(shortReturnToken.balanceOf(sender), 1_000);
+        assertEq(shortReturnToken.balanceOf(recipient1), 0);
+        assertEq(shortReturnToken.allowance(sender, address(batchTransfer)), 600);
+    }
+
+    function testBatchTransferERC20RevertsOnBalanceQueryFailure() public {
+        BrokenQueryERC20 brokenToken = new BrokenQueryERC20();
+        address[] memory recipients = _recipients3();
+        uint256[] memory amounts = _amounts3(100, 200, 300);
+
+        brokenToken.setBalanceMode(BrokenQueryERC20.QueryMode.Revert);
+
+        vm.prank(sender);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IBatchTransferErrors.ERC20BalanceQueryFailed.selector,
+                address(brokenToken),
+                sender,
+                _errorString("BROKEN_QUERY")
+            )
+        );
+        batchTransfer.batchTransferERC20(address(brokenToken), recipients, amounts);
+    }
+
+    function testBatchTransferERC20RevertsOnAllowanceQueryFailure() public {
+        BrokenQueryERC20 brokenToken = new BrokenQueryERC20();
+        address[] memory recipients = _recipients3();
+        uint256[] memory amounts = _amounts3(100, 200, 300);
+
+        brokenToken.setAllowanceMode(BrokenQueryERC20.QueryMode.Revert);
+
+        vm.prank(sender);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IBatchTransferErrors.ERC20AllowanceQueryFailed.selector,
+                address(brokenToken),
+                sender,
+                address(batchTransfer),
+                _errorString("BROKEN_QUERY")
+            )
+        );
+        batchTransfer.batchTransferERC20(address(brokenToken), recipients, amounts);
     }
 
     function testNativeBalances() public {
@@ -285,6 +457,20 @@ contract BatchTransferTest is Test {
         assertEq(balances[2], 300);
     }
 
+    function testERC20BalancesRevertsOnShortBalanceReturn() public {
+        BrokenQueryERC20 brokenToken = new BrokenQueryERC20();
+        address[] memory accounts = _recipients3();
+
+        brokenToken.setBalanceMode(BrokenQueryERC20.QueryMode.Short);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IBatchTransferErrors.ERC20BalanceQueryFailed.selector, address(brokenToken), recipient1, hex"01"
+            )
+        );
+        batchTransfer.erc20Balances(address(brokenToken), accounts);
+    }
+
     function testAllowsEmptyBalanceQueries() public view {
         address[] memory accounts = new address[](0);
 
@@ -293,6 +479,51 @@ contract BatchTransferTest is Test {
 
         assertEq(nativeBalanceValues.length, 0);
         assertEq(erc20BalanceValues.length, 0);
+    }
+
+    function testAllowsLargeTransferRecipientBatches() public {
+        uint256 recipientCount = 201;
+        address[] memory recipients = new address[](recipientCount);
+        uint256[] memory amounts = new uint256[](recipientCount);
+
+        for (uint256 i = 0; i < recipientCount; i++) {
+            recipients[i] = address(uint160(i + 1));
+            amounts[i] = 1;
+        }
+
+        token.mint(sender, recipientCount);
+        vm.prank(sender);
+        token.approve(address(batchTransfer), recipientCount);
+
+        vm.prank(sender);
+        uint256 totalAmount = batchTransfer.batchTransferERC20(address(token), recipients, amounts);
+
+        assertEq(totalAmount, recipientCount);
+        assertEq(token.balanceOf(sender), 0);
+        assertEq(token.balanceOf(recipients[0]), 1);
+        assertEq(token.balanceOf(recipients[recipientCount - 1]), 1);
+    }
+
+    function testAllowsLargeBalanceAccountBatches() public view {
+        uint256 accountCount = 501;
+        address[] memory accounts = new address[](accountCount);
+
+        uint256[] memory balances = batchTransfer.nativeBalances(accounts);
+
+        assertEq(balances.length, accountCount);
+        assertEq(balances[0], 0);
+        assertEq(balances[accountCount - 1], 0);
+    }
+
+    function testRevertsOnEmptyTransferBatch() public {
+        address[] memory recipients = new address[](0);
+        uint256[] memory amounts = new uint256[](0);
+
+        vm.expectRevert(IBatchTransferErrors.EmptyBatch.selector);
+        batchTransfer.batchTransferNative(recipients, amounts);
+
+        vm.expectRevert(IBatchTransferErrors.EmptyBatch.selector);
+        batchTransfer.batchTransferERC20(address(token), recipients, amounts);
     }
 
     function testRevertsOnLengthMismatch() public {
@@ -322,34 +553,6 @@ contract BatchTransferTest is Test {
         batchTransfer.batchTransferERC20(address(token), recipients, amounts);
     }
 
-    function testRevertsOnTooManyTransferRecipients() public {
-        address[] memory recipients = new address[](batchTransfer.MAX_TRANSFER_RECIPIENTS() + 1);
-        uint256[] memory amounts = new uint256[](recipients.length);
-
-        for (uint256 i = 0; i < recipients.length; i++) {
-            recipients[i] = address(uint160(i + 1));
-            amounts[i] = 1;
-        }
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IBatchTransferErrors.BatchTooLarge.selector, recipients.length, batchTransfer.MAX_TRANSFER_RECIPIENTS()
-            )
-        );
-        batchTransfer.batchTransferERC20(address(token), recipients, amounts);
-    }
-
-    function testRevertsOnTooManyBalanceAccounts() public {
-        address[] memory accounts = new address[](batchTransfer.MAX_BALANCE_ACCOUNTS() + 1);
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IBatchTransferErrors.BatchTooLarge.selector, accounts.length, batchTransfer.MAX_BALANCE_ACCOUNTS()
-            )
-        );
-        batchTransfer.nativeBalances(accounts);
-    }
-
     function testRevertsOnInvalidToken() public {
         address[] memory recipients = _recipients3();
         uint256[] memory amounts = _amounts3(100, 200, 300);
@@ -377,5 +580,9 @@ contract BatchTransferTest is Test {
         amounts[0] = amount1;
         amounts[1] = amount2;
         amounts[2] = amount3;
+    }
+
+    function _errorString(string memory reason) internal pure returns (bytes memory) {
+        return abi.encodeWithSignature("Error(string)", reason);
     }
 }

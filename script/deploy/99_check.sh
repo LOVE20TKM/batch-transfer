@@ -43,20 +43,6 @@ echo ""
 failed_checks=0
 
 check_equal \
-    "BatchTransfer: MAX_TRANSFER_RECIPIENTS" \
-    "200" \
-    "$(cast_call "$batchTransferAddress" "MAX_TRANSFER_RECIPIENTS()(uint256)")"
-[ $? -ne 0 ] && ((failed_checks++))
-echo ""
-
-check_equal \
-    "BatchTransfer: MAX_BALANCE_ACCOUNTS" \
-    "500" \
-    "$(cast_call "$batchTransferAddress" "MAX_BALANCE_ACCOUNTS()(uint256)")"
-[ $? -ne 0 ] && ((failed_checks++))
-echo ""
-
-check_equal \
     "BatchTransfer: NATIVE_TRANSFER_GAS_LIMIT" \
     "50000" \
     "$(cast_call "$batchTransferAddress" "NATIVE_TRANSFER_GAS_LIMIT()(uint256)")"
@@ -65,7 +51,7 @@ echo ""
 
 echo "========================================="
 if [ $failed_checks -eq 0 ]; then
-    echo -e "\033[32m✓ All parameter checks passed (3/3)\033[0m"
+    echo -e "\033[32m✓ All parameter checks passed (1/1)\033[0m"
     echo "========================================="
     return 0 2>/dev/null || exit 0
 else

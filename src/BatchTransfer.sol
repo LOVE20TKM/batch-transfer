@@ -10,8 +10,6 @@ interface IERC20Minimal {
 }
 
 contract BatchTransfer is IBatchTransfer {
-    uint256 public constant override MAX_TRANSFER_RECIPIENTS = 200;
-    uint256 public constant override MAX_BALANCE_ACCOUNTS = 500;
     uint256 public constant override NATIVE_TRANSFER_GAS_LIMIT = 50_000;
 
     function batchTransferNative(address[] calldata recipients, uint256[] calldata amounts)
@@ -27,9 +25,10 @@ contract BatchTransfer is IBatchTransfer {
 
         uint256 recipientCount = recipients.length;
         for (uint256 i = 0; i < recipientCount; i++) {
-            (bool success,) = recipients[i].call{value: amounts[i], gas: NATIVE_TRANSFER_GAS_LIMIT}("");
+            (bool success, bytes memory data) =
+                recipients[i].call{value: amounts[i], gas: NATIVE_TRANSFER_GAS_LIMIT}("");
             if (!success) {
-                revert NativeTransferFailed(i, recipients[i], amounts[i]);
+                revert NativeTransferFailed(i, recipients[i], amounts[i], data);
             }
         }
 
@@ -63,8 +62,6 @@ contract BatchTransfer is IBatchTransfer {
     }
 
     function nativeBalances(address[] calldata accounts) external view override returns (uint256[] memory balances) {
-        _validateBalanceAccounts(accounts.length);
-
         balances = new uint256[](accounts.length);
         for (uint256 i = 0; i < accounts.length; i++) {
             balances[i] = accounts[i].balance;
@@ -78,7 +75,6 @@ contract BatchTransfer is IBatchTransfer {
         returns (uint256[] memory balances)
     {
         _requireTokenContract(token);
-        _validateBalanceAccounts(accounts.length);
 
         balances = new uint256[](accounts.length);
         for (uint256 i = 0; i < accounts.length; i++) {
@@ -98,9 +94,6 @@ contract BatchTransfer is IBatchTransfer {
         if (recipientCount != amounts.length) {
             revert ArrayLengthMismatch(recipientCount, amounts.length);
         }
-        if (recipientCount > MAX_TRANSFER_RECIPIENTS) {
-            revert BatchTooLarge(recipientCount, MAX_TRANSFER_RECIPIENTS);
-        }
 
         for (uint256 i = 0; i < recipientCount; i++) {
             if (recipients[i] == address(0)) {
@@ -110,12 +103,6 @@ contract BatchTransfer is IBatchTransfer {
                 revert ZeroAmount(i);
             }
             totalAmount += amounts[i];
-        }
-    }
-
-    function _validateBalanceAccounts(uint256 accountCount) internal pure {
-        if (accountCount > MAX_BALANCE_ACCOUNTS) {
-            revert BatchTooLarge(accountCount, MAX_BALANCE_ACCOUNTS);
         }
     }
 
@@ -129,7 +116,7 @@ contract BatchTransfer is IBatchTransfer {
         (bool success, bytes memory data) =
             token.staticcall(abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, account));
         if (!success || data.length < 32) {
-            revert ERC20BalanceQueryFailed(token, account);
+            revert ERC20BalanceQueryFailed(token, account, data);
         }
 
         balance = abi.decode(data, (uint256));
@@ -143,7 +130,7 @@ contract BatchTransfer is IBatchTransfer {
         (bool success, bytes memory data) =
             token.staticcall(abi.encodeWithSelector(IERC20Minimal.allowance.selector, owner, spender));
         if (!success || data.length < 32) {
-            revert ERC20AllowanceQueryFailed(token, owner, spender);
+            revert ERC20AllowanceQueryFailed(token, owner, spender, data);
         }
 
         allowanceAmount = abi.decode(data, (uint256));
@@ -152,8 +139,11 @@ contract BatchTransfer is IBatchTransfer {
     function _safeTransferFrom(address token, address from, address to, uint256 amount, uint256 index) internal {
         (bool success, bytes memory data) =
             token.call(abi.encodeWithSelector(IERC20Minimal.transferFrom.selector, from, to, amount));
-        if (!success || !_isSuccessfulERC20Return(data)) {
-            revert ERC20TransferFailed(token, index, to, amount);
+        if (!success) {
+            revert ERC20TransferFailed(token, index, to, amount, data);
+        }
+        if (!_isSuccessfulERC20Return(data)) {
+            revert ERC20InvalidReturn(token, index, to, amount, data);
         }
     }
 

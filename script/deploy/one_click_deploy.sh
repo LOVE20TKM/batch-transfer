@@ -13,7 +13,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$REPO_ROOT" || return 1 2>/dev/null || exit 1
 
-echo -e "\n[Step 1/5] Initializing environment..."
+echo -e "\n[Step 1/4] Initializing environment..."
 source "$SCRIPT_DIR/00_init.sh" "$1"
 if [ $? -ne 0 ]; then
     echo -e "\033[31mError:\033[0m Failed to initialize environment"
@@ -25,32 +25,20 @@ echo -e "  One-Click Deploy BatchTransfer"
 echo -e "  Network: $network"
 echo -e "========================================="
 
-echo -e "\n[Step 2/5] Running deployment precheck..."
-if ! source "$SCRIPT_DIR/00_precheck.sh"; then
-    echo -e "\033[31mError:\033[0m Deployment precheck failed"
-    return 1 2>/dev/null || exit 1
-fi
-
-echo -e "\n[Step 3/5] Deploying BatchTransfer..."
+echo -e "\n[Step 2/4] Deploying BatchTransfer..."
 source "$SCRIPT_DIR/01_deploy_batch_transfer.sh"
 if [ $? -ne 0 ]; then
     echo -e "\033[31mError:\033[0m Deployment failed"
     return 1 2>/dev/null || exit 1
 fi
 
-if [[ "$network" == thinkium70001* ]]; then
-    echo -e "\n[Step 4/5] Verifying contract on explorer..."
-    source "$SCRIPT_DIR/02_verify.sh"
-    if [ $? -ne 0 ]; then
-        echo -e "\033[33mWarning:\033[0m Contract verification failed (deployment is still successful)"
-    else
-        echo -e "\033[32m✓\033[0m Contract verified successfully"
-    fi
-else
-    echo -e "\n[Step 4/5] Skipping contract verification (not a thinkium network)"
+echo -e "\n[Step 3/4] Running explorer verification step..."
+source "$SCRIPT_DIR/02_verify.sh"
+if [ $? -ne 0 ]; then
+    echo -e "\033[33mWarning:\033[0m Contract verification failed (deployment is still successful)"
 fi
 
-echo -e "\n[Step 5/5] Running deployment checks..."
+echo -e "\n[Step 4/4] Running deployment checks..."
 source "$SCRIPT_DIR/99_check.sh"
 if [ $? -ne 0 ]; then
     echo -e "\033[31mError:\033[0m Deployment checks failed"

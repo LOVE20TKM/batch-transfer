@@ -18,14 +18,6 @@ if [ -z "$RPC_URL" ]; then
     return 1 2>/dev/null || exit 1
 fi
 
-current_precheck_key="${network}|${RPC_URL}"
-
-if [ "$BATCH_TRANSFER_PRECHECK_DONE" != "1" ] || [ "$BATCH_TRANSFER_PRECHECK_KEY" != "$current_precheck_key" ]; then
-    if ! source "$SCRIPT_DIR/00_precheck.sh"; then
-        return 1 2>/dev/null || exit 1
-    fi
-fi
-
 echo "Deploying BatchTransfer contract..."
 
 forge_script script/DeployBatchTransfer.s.sol:DeployBatchTransfer --sig "run()"

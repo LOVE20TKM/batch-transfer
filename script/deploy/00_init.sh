@@ -35,6 +35,30 @@ fi
 
 source "$network_dir/.account" && source "$network_dir/network.params"
 
+if [ -z "$RPC_URL" ]; then
+    echo -e "\033[31mError:\033[0m RPC_URL not set in network.params"
+    return 1 2>/dev/null || exit 1
+fi
+
+if [ -z "$CHAIN_ID" ]; then
+    echo -e "\033[31mError:\033[0m CHAIN_ID not set in network.params"
+    return 1 2>/dev/null || exit 1
+fi
+
+actual_chain_id=$(cast chain-id --rpc-url "$RPC_URL" 2>/dev/null)
+if [ $? -ne 0 ] || [ -z "$actual_chain_id" ]; then
+    echo -e "\033[31mError:\033[0m Failed to read chain id from RPC"
+    return 1 2>/dev/null || exit 1
+fi
+
+if [ "$actual_chain_id" != "$CHAIN_ID" ]; then
+    echo -e "\033[31mError:\033[0m RPC chain id mismatch"
+    echo "  Expected: $CHAIN_ID"
+    echo "  Actual:   $actual_chain_id"
+    return 1 2>/dev/null || exit 1
+fi
+echo -e "\033[32m✓\033[0m RPC chain id matches: $actual_chain_id"
+
 # ------ Request keystore password ------
 request_keystore_password() {
     if [ -n "$KEYSTORE_PASSWORD" ] && [ "$KEYSTORE_PASSWORD_ACCOUNT" = "$KEYSTORE_ACCOUNT" ]; then
